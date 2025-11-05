@@ -20,8 +20,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/hierarchical-graph"
-Repository = "https://github.com/yourusername/hierarchical-graph"
+Repository = "https://github.com/mugalan/hierarchical-graphs"
 
 [tool.setuptools.packages.find]
 where = ["hierarchical_graph"]

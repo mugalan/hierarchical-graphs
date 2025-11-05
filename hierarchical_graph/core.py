@@ -21,7 +21,7 @@ class NodeModel(BaseModel):
 class EdgeModel(BaseModel):
     start: str
     end: str
-    type: Optional[str] = None
+    type: str
     weight: Optional[float] = None
     color: Optional[str] = None
     description: Optional[str] = None
@@ -198,15 +198,15 @@ class HierarchicalGraph:
                 # add new node
                 self.nodes_data.append(other_node)
 
-        # --- Merge Edges ---
+        # --- Merge Edges (distinguish by start, end, type) ---
         existing_edges = {(e['start'], e['end'], e.get('type')) for e in self.edges_data}
 
         for other_edge in other.edges_data:
-            edge_key = (other_edge['start'], other_edge['end'])
-            if edge_key in existing_edges:
-                # update attributes of existing edge
+            key = (other_edge['start'], other_edge['end'], other_edge.get('type'))
+            if key in existing_edges:
+                # update attributes of the matching edge
                 for edge in self.edges_data:
-                    if edge['start'] == other_edge['start'] and edge['end'] == other_edge['end']:
+                    if (edge['start'], edge['end'], edge.get('type')) == key:
                         edge.update(other_edge)
                         break
             else:
@@ -216,6 +216,7 @@ class HierarchicalGraph:
         # --- Normalize and rebuild ---
         self._normalize_nodes()
         self.create_hierarchical_graphs_iterative()
+
 
     # --------------------------
     # Visualization Methods

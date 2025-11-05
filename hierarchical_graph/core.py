@@ -332,7 +332,7 @@ class HierarchicalGraph:
                         penwidth=penwidth)
 
         filepath = dot.render(filename, format='png', cleanup=True)
-        print(f"Outer-level graph saved as {filepath}")
+        print(f"Outer-level graph with paren relation saved as {filepath}")
         try:
             display(Image(filename=filepath))
         except:

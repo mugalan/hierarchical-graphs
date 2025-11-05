@@ -273,48 +273,30 @@ class HierarchicalGraph:
         dot_lines = []
         dot_lines.append('digraph G {')
         dot_lines.append('    rankdir="LR";')
+        dot_lines.append('    compound=true;')  # nicer routing across clusters
         dot_lines.append('    node [shape=box, style="filled"];')
 
         # --- Build node map and children map ---
         node_map = {}       # {label: attributes}
         children_map = {}   # {parent_label: [child_labels]}
-        
         for node, attrs in self.inner_graph.nodes(data=True):
             node_map[node] = attrs
             parent = attrs.get('parent', None)
             children_map.setdefault(parent, []).append(node)
 
-        # --- Recursive cluster builder ---
-        def _build_clusters_recursive(dot_lines, parent_label):
-            if parent_label is not None:
-                cluster_id = parent_label.replace(" ", "_")
-                dot_lines.append(f'    subgraph cluster_{cluster_id} {{')
-                dot_lines.append(f'        label="{parent_label}";')
-                bg_color = node_map.get(parent_label, {}).get('color', 'white')
-                dot_lines.append(f'        bgcolor="{bg_color}";')
-
-            for child in children_map.get(parent_label, []):
-                if child in children_map:
-                    _build_clusters_recursive(dot_lines, child)
-                else:
-                    color = node_map[child].get('color', 'white')
-                    dot_lines.append(f'        "{child}" [fillcolor="{color}"];')
-
-            if parent_label is not None:
-                dot_lines.append('    }')
-
-        # --- Begin cluster construction from root (None or missing parent) ---
-        _build_clusters_recursive(dot_lines, None)
+        # --- Build clusters from root (None) using the class helper ---
+        self._build_clusters_recursive(dot_lines, None, node_map, children_map)
 
         # --- Add edges ---
         for u, v, key, data in self.inner_graph.edges(keys=True, data=True):
             label = data.get('type', '')
             penwidth = str(data.get('weight', 1.0) * 2)
             color = data.get('color', 'black')
-            dot_lines.append(f'    "{u}" -> "{v}" [label="{label}", id="{key}", penwidth={penwidth}, color="{color}"];')
+            dot_lines.append(
+                f'    "{u}" -> "{v}" [label="{label}", id="{key}", penwidth={penwidth}, color="{color}"];'
+            )
 
         dot_lines.append('}')
-        
         dot_source = '\n'.join(dot_lines)
         dot = graphviz.Source(dot_source, format='png')
         filepath = dot.render(filename, cleanup=True)
@@ -323,6 +305,7 @@ class HierarchicalGraph:
             display(Image(filename=filepath))
         except:
             print("Open the saved image to view the graph.")
+
 
     def visualize_subgraph(self, node_labels, filename="subgraph"):
         """

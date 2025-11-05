@@ -153,7 +153,7 @@ class HierarchicalGraph:
         outer_graph = nx.MultiDiGraph()
 
         # Add all nodes from inner graph
-        outer_graph.add_nodes_from(inner_graph.nodes)
+        outer_graph.add_nodes_from(inner_graph.nodes(data=True))
 
         # Add parent-child edges from 'parent' attribute (hierarchical structure)
         for node, attrs in inner_graph.nodes(data=True):

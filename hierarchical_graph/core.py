@@ -109,6 +109,11 @@ class HierarchicalGraph:
                 node['group'] = 'Default'
 
     def _build_clusters_recursive(self, dot_lines, parent_label, node_map, children_map):
+        """
+        Emit nested cluster subgraphs. Crucially, if a parent has children,
+        we also draw the parent node *inside* its own cluster so edges to that
+        node don't create an orphan node outside the cluster.
+        """
         if parent_label is not None:
             cluster_id = parent_label.replace(" ", "_")
             dot_lines.append(f'    subgraph cluster_{cluster_id} {{')
@@ -116,9 +121,14 @@ class HierarchicalGraph:
             bg_color = node_map.get(parent_label, {}).get('color', 'white')
             dot_lines.append(f'        bgcolor="{bg_color}";')
 
-        # Add children nodes or recurse into subclusters
+            # draw the parent node itself inside the cluster (prevents grey orphan)
+            if parent_label in node_map:
+                node_color = node_map[parent_label].get('color', 'white')
+                dot_lines.append(f'        "{parent_label}" [fillcolor="{node_color}"];')
+
+        # children: recurse for groups, draw leaves as nodes
         for child in children_map.get(parent_label, []):
-            if child in children_map:
+            if child in children_map:  # child has its own children => subcluster
                 self._build_clusters_recursive(dot_lines, child, node_map, children_map)
             else:
                 node_color = node_map[child].get('color', 'white')
@@ -126,6 +136,7 @@ class HierarchicalGraph:
 
         if parent_label is not None:
             dot_lines.append('    }')  # close subgraph
+
 
 
     def create_hierarchical_graphs_iterative(self):

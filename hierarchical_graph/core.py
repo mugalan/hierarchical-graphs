@@ -238,29 +238,67 @@ class HierarchicalGraph:
     # Visualization Methods
     # --------------------------
     def visualize_outer_graph(self, filename='outer_level_graph'):
-        dot = graphviz.Digraph(comment='Outer Level Graph', engine='dot')
+        """
+        Outer view:
+        - Nodes: only roots (nodes with parent == None)
+        - Edges: each inner edge u->v is 'lifted' to root(u) -> root(v)
+                (edges where root(u) == root(v) are skipped)
+        """
 
-        # Add nodes with group-based fill color
-        for node in self.outer_graph.nodes:
-            fillcolor = self.group_colors.get(node, 'white')
-            dot.node(str(node), style='filled', fillcolor=fillcolor)
+        def root_of(n: str) -> str | None:
+            # Walk parent pointers to the top-most ancestor
+            current = n
+            visited = set()
+            while True:
+                if current not in self.inner_graph.nodes:
+                    return None
+                if current in visited:  # safety against cycles
+                    return current
+                visited.add(current)
+                parent = self.inner_graph.nodes[current].get('parent')
+                if not parent:
+                    return current
+                current = parent
 
-        # Add directed edges with attributes
-        for u, v, key, data in self.outer_graph.edges(keys=True, data=True):
+        dot = graphviz.Digraph(comment='Outer Level Graph (roots only)', engine='dot')
+        dot.attr(rankdir='LR')
+        dot.attr('node', shape='box', style='filled')
+
+        # --- Collect root nodes from inner graph ---
+        roots = []
+        for node, attrs in self.inner_graph.nodes(data=True):
+            if attrs.get('parent') is None:
+                roots.append(node)
+
+        # --- Draw root nodes with their own colors (fallback white) ---
+        for r in roots:
+            fill = self.inner_graph.nodes[r].get('color', 'white')
+            dot.node(str(r), fillcolor=fill)
+
+        # --- Lift inner edges to root level ---
+        for u, v, data in self.inner_graph.edges(data=True):
+            ru = root_of(u)
+            rv = root_of(v)
+            if not ru or not rv:
+                continue
+            if ru == rv:
+                # Edge stays within the same root container -> skip in outer view
+                continue
+
             label = data.get('type', '')
             penwidth = str(data.get('weight', 1.0) * 2)
             color = data.get('color', 'black')
-            dot.edge(str(u), str(v),
-                    label=label,
-                    penwidth=penwidth,
-                    color=color)
+
+            # Multiple edges between the same roots are allowed (shows parallel relations)
+            dot.edge(str(ru), str(rv), label=label, penwidth=penwidth, color=color)
 
         filepath = dot.render(filename, format='png', cleanup=True)
         print(f"Outer-level graph saved as {filepath}")
         try:
             display(Image(filename=filepath))
-        except:
+        except Exception:
             print("Open the saved image to view the graph.")
+
 
 
     def visualize_outer_graph_with_parent(self, filename='outer_level_graph'):

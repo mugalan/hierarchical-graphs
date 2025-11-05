@@ -1,0 +1,546 @@
+import json, csv
+import pandas as pd
+import networkx as nx
+import graphviz
+from IPython.display import display, Image
+
+from pydantic import BaseModel, ValidationError, field_validator
+from typing import Optional
+
+
+class NodeModel(BaseModel):
+    label: str
+    group: Optional[str] = 'Default'
+    type: Optional[str] = None
+    color: Optional[str] = None
+    description: Optional[str] = None
+    # allow additional attributes
+    class Config:
+        extra = 'allow'
+
+class EdgeModel(BaseModel):
+    start: str
+    end: str
+    type: Optional[str] = None
+    weight: Optional[float] = None
+    color: Optional[str] = None
+    description: Optional[str] = None
+
+    # this validator executes BEFORE type coercion
+    @field_validator('*', mode="before")
+    def fix_nan(cls, v):
+        # convert nan → None
+        # pandas blank cell = nan => string validators freak out
+        if v != v:   # nan check canonical
+            return None
+        return v
+
+
+
+class HierarchicalGraph:
+    def __init__(
+        self,
+        nodes_data: list[dict],
+        edges_data: list[dict],
+        default_colors: list[str] | None = None
+    ):
+        """
+        Parameters
+        ----------
+        nodes_data : list[dict]
+            list of node objects. each dict must minimally satisfy pydantic NodeModel
+            required fields:
+                - label : str
+            optional:
+                - group : str (default assigned "Default" if missing)
+                any additional node attributes are allowed and preserved.
+
+        edges_data : list[dict]
+            list of edge objects. each dict must minimally satisfy pydantic EdgeModel
+            required fields:
+                - start : str
+                - end   : str
+                - type  : str
+            optional:
+                weight, color, description and arbitrary extra attributes allowed.
+
+        default_colors : list[str] | None
+            optional override palette for groups. If None, internal default palette used.
+        """
+        self.nodes_data = self._validate_nodes(nodes_data)
+        self.edges_data = self._validate_edges(edges_data)
+        self.nodes_data = nodes_data
+        self.edges_data = edges_data
+        self._normalize_nodes()
+
+        if not default_colors:
+            self.default_colors = [
+                'lightblue', 'lightgreen', 'lightyellow', 'lightpink', 'lightgray',
+                'lightsalmon', 'lightcyan', 'wheat', 'plum', 'lightgoldenrod'
+            ]
+        else:
+            self.default_colors = default_colors
+
+        # colors must exist BEFORE assigning to groups
+        self._assign_group_colors()
+
+        self.inner_graph = nx.MultiDiGraph()
+        self.outer_graph = nx.DiGraph()
+
+        self.create_hierarchical_graphs_iterative()
+
+    def _validate_nodes(self, node_list):
+        validated = []
+        for item in node_list:
+            try:
+                validated.append(NodeModel(**item).model_dump())
+            except ValidationError as e:
+                raise ValueError(f"Invalid node data:\n{e}")
+        return validated
+
+
+    def _validate_edges(self, edge_list):
+        validated = []
+        for item in edge_list:
+            try:
+                model = EdgeModel.model_validate(item)
+                cleaned = model.model_dump(exclude_none=True)  # 💡 omit None values
+                validated.append(cleaned)
+            except ValidationError as e:
+                raise ValueError(f"Invalid edge data:\n{e}")
+        return validated
+
+
+    def _assign_group_colors(self):
+        """Assign consistent colors to groups."""
+        groups = sorted(set(node.get('group', 'Default') for node in self.nodes_data))
+
+        self.group_colors = {
+            group: self.default_colors[i % len(self.default_colors)]
+            for i, group in enumerate(groups)
+        }
+
+    def _normalize_nodes(self):
+        # enforce group presence always
+        for node in self.nodes_data:
+            if 'group' not in node:
+                node['group'] = 'Default'
+
+
+
+    def create_hierarchical_graphs_iterative(self):
+        inner_graph = nx.MultiDiGraph()
+
+        # --- Add nodes to inner graph ---
+        for node_data in self.nodes_data:
+            label = node_data['label']
+            attributes = {k: v for k, v in node_data.items() if k != 'label'}
+
+            # Ensure 'group' is always present
+            if 'group' not in attributes:
+                attributes['group'] = 'Default'
+
+            inner_graph.add_node(label, **attributes)
+
+        # --- Add edges to inner graph ---
+        for edge_data in self.edges_data:
+            start = edge_data['start']
+            end = edge_data['end']
+            attributes = {k: v for k, v in edge_data.items() if k not in ['start', 'end']}
+            inner_graph.add_edge(start, end, **attributes)
+
+        # --- Create outer MultiDiGraph ---
+        outer_graph = nx.MultiDiGraph()
+
+        # --- Collect group names from the updated inner graph ---
+        group_nodes = set()
+        for _, attrs in inner_graph.nodes(data=True):
+            group_nodes.add(attrs.get('group', 'Default'))
+
+
+        outer_graph.add_nodes_from(group_nodes)
+
+        # --- Add inter-group edges to outer graph (one-to-one mapping from inner) ---
+        for u, v, data in inner_graph.edges(data=True):
+            group_u = inner_graph.nodes[u].get('group', 'Default')
+            group_v = inner_graph.nodes[v].get('group', 'Default')
+
+            if group_u != group_v:
+                outer_graph.add_edge(group_u, group_v, **data)
+
+        # Assign back
+        self.inner_graph = inner_graph
+        self.outer_graph = outer_graph
+
+    # --------------------------
+    # Node Operations
+    # --------------------------
+    def add_nodes(self, node_data):
+        """
+        Add one or more nodes.
+        Automatically updates group color mapping if new groups are introduced.
+        """
+        if isinstance(node_data, dict):
+            node_data = [node_data]
+
+        self.nodes_data.extend(node_data)
+        self._assign_group_colors()  # Update colors in case new groups are added
+        self.create_hierarchical_graphs_iterative()
+
+    def edit_nodes(self, label_or_labels, new_data):
+        """
+        Edit one or more nodes by label.
+        Parameters:
+            label_or_labels: str or list of str
+            new_data: dict of attributes to update
+        """
+        if isinstance(label_or_labels, str):
+            label_or_labels = [label_or_labels]
+
+        for node in self.nodes_data:
+            if node['label'] in label_or_labels:
+                node.update(new_data)
+
+        self._assign_group_colors()  # in case group was changed during edit
+        self.create_hierarchical_graphs_iterative()
+
+    def delete_nodes(self, label_or_labels):
+        """
+        Delete one or more nodes and remove any edges involving them.
+        Parameters:
+            label_or_labels: str or list of str
+        """
+        if isinstance(label_or_labels, str):
+            label_or_labels = [label_or_labels]
+
+        self.nodes_data = [node for node in self.nodes_data if node['label'] not in label_or_labels]
+        self.edges_data = [edge for edge in self.edges_data if edge['start'] not in label_or_labels and edge['end'] not in label_or_labels]
+        self._assign_group_colors()  # groups may have been removed
+        self.create_hierarchical_graphs_iterative()
+
+    # --------------------------
+    # Edge Operations
+    # --------------------------
+    def add_edges(self, edge_data):
+        """Add one or more edges."""
+        if isinstance(edge_data, list):
+            self.edges_data.extend(edge_data)
+        else:
+            self.edges_data.append(edge_data)
+        self.create_hierarchical_graphs_iterative()
+
+    def edit_edges(self, start_end_pairs, new_data):
+        """
+        Edit one or more edges.
+        `start_end_pairs`: tuple or list of tuples like [(start, end), ...]
+        `new_data`: dict with new edge attributes
+        """
+        if isinstance(start_end_pairs, tuple):
+            start_end_pairs = [start_end_pairs]
+
+        for start, end in start_end_pairs:
+            for edge in self.edges_data:
+                if edge['start'] == start and edge['end'] == end:
+                    edge.update(new_data)
+                    break
+        self.create_hierarchical_graphs_iterative()
+
+    def delete_edges(self, start_end_pairs):
+        """
+        Delete one or more edges.
+        `start_end_pairs`: tuple or list of tuples like [(start, end), ...]
+        """
+        if isinstance(start_end_pairs, tuple):
+            start_end_pairs = [start_end_pairs]
+
+        self.edges_data = [
+            edge for edge in self.edges_data
+            if (edge['start'], edge['end']) not in start_end_pairs
+        ]
+        self.create_hierarchical_graphs_iterative()
+
+
+    # --------------------------
+    # Merge Graphs
+    # --------------------------
+
+    def merge(self, other):
+        """
+        Merge another HierarchicalGraph into this one.
+        - Updates existing nodes and edges with attributes from the other.
+        - Adds new nodes and edges if they don't already exist.
+        - Merges group colors.
+        """
+
+        # --- Merge Nodes ---
+        existing_labels = {node['label'] for node in self.nodes_data}
+
+        for other_node in other.nodes_data:
+            label = other_node['label']
+            if label in existing_labels:
+                # update attributes of existing node
+                for node in self.nodes_data:
+                    if node['label'] == label:
+                        node.update(other_node)
+                        break
+            else:
+                # add new node
+                self.nodes_data.append(other_node)
+
+        # --- Merge Edges ---
+        existing_edges = {(edge['start'], edge['end']) for edge in self.edges_data}
+
+        for other_edge in other.edges_data:
+            edge_key = (other_edge['start'], other_edge['end'])
+            if edge_key in existing_edges:
+                # update attributes of existing edge
+                for edge in self.edges_data:
+                    if edge['start'] == other_edge['start'] and edge['end'] == other_edge['end']:
+                        edge.update(other_edge)
+                        break
+            else:
+                # add new edge
+                self.edges_data.append(other_edge)
+
+        # --- Update group colors ---
+        self._normalize_nodes()
+        self._assign_group_colors()
+
+        # --- Rebuild graphs ---
+        self.create_hierarchical_graphs_iterative()
+
+
+    # --------------------------
+    # Visualization Methods
+    # --------------------------
+    def visualize_outer_graph(self, filename='outer_level_graph'):
+        dot = graphviz.Digraph(comment='Outer Level Graph', engine='dot')
+
+        # Add nodes with group-based fill color
+        for node in self.outer_graph.nodes:
+            fillcolor = self.group_colors.get(node, 'white')
+            dot.node(str(node), style='filled', fillcolor=fillcolor)
+
+        # Add directed edges with attributes
+        for u, v, key, data in self.outer_graph.edges(keys=True, data=True):
+            label = data.get('type', '')
+            penwidth = str(data.get('weight', 1.0) * 2)
+            color = data.get('color', 'black')
+            dot.edge(str(u), str(v),
+                    label=label,
+                    penwidth=penwidth,
+                    color=color)
+
+        filepath = dot.render(filename, format='png', cleanup=True)
+        print(f"Outer-level graph saved as {filepath}")
+        try:
+            display(Image(filename=filepath))
+        except:
+            print("Open the saved image to view the graph.")
+
+    def visualize_inner_graph_with_clusters(self, filename="inner_level_graph"):
+        dot_source = 'digraph G {\n'
+        dot_source += '    rankdir="LR";\n'
+        dot_source += '    node [shape=box, style="filled"];\n'
+
+        # Group nodes by their cluster (group)
+        clusters = {}
+        node_attrs = {}
+        for node, attrs in self.inner_graph.nodes(data=True):
+            group = attrs.get('group', 'DefaultGroup')
+            clusters.setdefault(group, []).append(node)
+            node_attrs[node] = attrs
+
+        for group, nodes in clusters.items():
+            bg_color = self.group_colors.get(group, 'white')
+            cluster_id = group.replace(" ", "_")
+
+            dot_source += f'    subgraph cluster_{cluster_id} {{\n'
+            dot_source += f'        label="{group}";\n'
+            dot_source += f'        bgcolor="{bg_color}";\n'
+
+            for node in nodes:
+                # Fallback to group color if no individual color provided
+                node_color = node_attrs[node].get('color', self.group_colors.get(group, 'white'))
+                dot_source += f'        "{node}" [fillcolor="{node_color}"];\n'
+
+            dot_source += '    }\n'
+
+        # Add edges
+        for u, v, key, data in self.inner_graph.edges(keys=True, data=True):
+            label = data.get('type', '')
+            penwidth = str(data.get('weight', 1.0) * 2)
+            color = data.get('color', 'black')
+            dot_source += f'    "{u}" -> "{v}" [label="{label}", id="{key}", penwidth={penwidth}, color="{color}"];\n'
+
+        dot_source += '}\n'
+
+        dot = graphviz.Source(dot_source, format='png')
+        filepath = dot.render(filename, cleanup=True)
+        print(f"Inner-level graph saved as {filepath}")
+        try:
+            display(Image(filename=filepath))
+        except:
+            print("Open the saved image to view the graph.")
+
+    def visualize_subgraph(self, node_labels, filename="subgraph"):
+        """
+        Visualize a subgraph induced by a list of node labels.
+        Nodes that don't exist are silently ignored.
+        Parameters:
+            node_labels (list of str): Nodes to include in the subgraph
+            filename (str): Filename for output image
+        """
+        if not node_labels:
+            print("No nodes provided for subgraph.")
+            return
+
+        # Filter only nodes that exist in the graph
+        valid_nodes = [n for n in node_labels if n in self.inner_graph.nodes]
+        if not valid_nodes:
+            print("None of the provided nodes exist in the inner graph.")
+            return
+
+        # Create subgraph
+        subgraph = self.inner_graph.subgraph(valid_nodes).copy()
+
+        dot_source = 'digraph G {\n'
+        dot_source += '    rankdir="LR";\n'
+        dot_source += '    node [shape=box, style="filled"];\n'
+
+        # Add nodes with colors
+        for node in subgraph.nodes:
+            attrs = subgraph.nodes[node]
+            group = attrs.get('group', 'DefaultGroup')
+            fillcolor = attrs.get('color', self.group_colors.get(group, 'white'))
+            dot_source += f'    "{node}" [fillcolor="{fillcolor}"];\n'
+
+        # Add edges with styling
+        for u, v, key, data in subgraph.edges(keys=True, data=True):
+            label = data.get('type', '')
+            penwidth = str(data.get('weight', 1.0) * 2)
+            color = data.get('color', 'black')
+            dot_source += f'    "{u}" -> "{v}" [label="{label}", id="{key}", penwidth={penwidth}, color="{color}"];\n'
+
+        dot_source += '}\n'
+
+        dot = graphviz.Source(dot_source, format='png')
+        filepath = dot.render(filename, cleanup=True)
+        print(f"Subgraph saved as {filepath}")
+        try:
+            display(Image(filename=filepath))
+        except:
+            print("Open the saved image to view the subgraph.")
+
+    #----Get Node, edge attributes
+
+    def get_node_attributes(self, labels=None):
+        """
+        Get attributes of one or more nodes.
+        If labels is None or [] → return ALL node attributes.
+        Parameters:
+            labels (str or list of str or None)
+        Returns:
+            dict: {label: attributes}
+        """
+
+        # return ALL
+        if labels is None or labels == []:
+            return {label: dict(attrs) for label, attrs in self.inner_graph.nodes(data=True)}
+
+        # normalize input
+        if isinstance(labels, str):
+            labels = [labels]
+
+        results = {}
+        for label in labels:
+            if label in self.inner_graph.nodes:
+                results[label] = dict(self.inner_graph.nodes[label])
+            else:
+                results[label] = None
+        return results
+
+    def get_edge_attributes(self, edge_tuples=None):
+        """
+        Get attributes of one or more edges.
+        If edge_tuples is None or [] → return ALL edges in the graph
+        Parameters:
+            edge_tuples: tuple or list of tuples [(start,end),...]
+        Returns:
+            dict: {(start, end, key): attributes}
+        """
+
+        results = {}
+
+        # return ALL edges
+        if edge_tuples is None or edge_tuples == []:
+            for u, v, key, attrs in self.inner_graph.edges(keys=True, data=True):
+                results[(u, v, key)] = dict(attrs)
+            return results
+
+        # normalize input
+        if isinstance(edge_tuples, tuple):
+            edge_tuples = [edge_tuples]
+
+        # specific subset edges
+        for start, end in edge_tuples:
+            if self.inner_graph.has_edge(start, end):
+                for key, attrs in self.inner_graph[start][end].items():
+                    results[(start, end, key)] = dict(attrs)
+            else:
+                results[(start, end, None)] = None
+        return results
+
+    #-----export/import---------
+
+    # Method to export graph data to JSON
+    def export_json(self, path):
+        """
+        Export the graph data (nodes and edges) to a JSON file.
+        """
+        data = {
+            'nodes': self.nodes_data,
+            'edges': self.edges_data
+        }
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=2)
+        print(f"Graph exported to {path}")
+
+    # Method to load a graph from JSON
+    def load_from_json(path):
+        """
+        Load a HierarchicalGraph from a JSON file.
+        Returns:
+            HierarchicalGraph instance
+        """
+        with open(path, 'r') as f:
+            data = json.load(f)
+        return HierarchicalGraph(data['nodes'], data['edges'])
+
+    def export_nodes_to_csv(self, filename='nodes.csv'):
+        df = pd.DataFrame(self.nodes_data)
+        df.to_csv(filename, index=False)
+        print(f"Nodes exported to {filename}")
+
+    def export_edges_to_csv(self, filename='edges.csv'):
+        df = pd.DataFrame(self.edges_data)
+        df.to_csv(filename, index=False)
+        print(f"Edges exported to {filename}")
+
+    def import_nodes_from_csv(self, filename):
+        df = pd.read_csv(filename)
+        raw_nodes = df.to_dict(orient='records')
+        self.nodes_data = self._validate_nodes(raw_nodes)
+        self._normalize_nodes()
+        self._assign_group_colors()
+        self.create_hierarchical_graphs_iterative()
+        print(f"Nodes loaded from {filename}")
+
+
+    def import_edges_from_csv(self, filename):
+        df = pd.read_csv(filename)
+        raw_edges = df.to_dict(orient='records')
+        self.edges_data = self._validate_edges(raw_edges)
+        self.create_hierarchical_graphs_iterative()
+        print(f"Edges loaded from {filename}")
+

@@ -110,32 +110,37 @@ class HierarchicalGraph:
 
     def _build_clusters_recursive(self, dot_lines, parent_label, node_map, children_map):
         """
-        Emit nested cluster subgraphs. Crucially, if a parent has children,
-        we also draw the parent node *inside* its own cluster so edges to that
-        node don't create an orphan node outside the cluster.
+        Build nested clusters. We DO NOT draw visible nodes for parents.
+        Instead, for each cluster we add a tiny invisible anchor node so
+        edges can attach to the cluster boundary via ltail/lhead.
         """
+        def _cid(label: str) -> str:
+            return label.replace(" ", "_")
+
         if parent_label is not None:
-            cluster_id = parent_label.replace(" ", "_")
-            dot_lines.append(f'    subgraph cluster_{cluster_id} {{')
+            cid = _cid(parent_label)
+            dot_lines.append(f'    subgraph cluster_{cid} {{')
             dot_lines.append(f'        label="{parent_label}";')
             bg_color = node_map.get(parent_label, {}).get('color', 'white')
             dot_lines.append(f'        bgcolor="{bg_color}";')
 
-            # draw the parent node itself inside the cluster (prevents grey orphan)
-            if parent_label in node_map:
-                node_color = node_map[parent_label].get('color', 'white')
-                dot_lines.append(f'        "{parent_label}" [fillcolor="{node_color}"];')
+            # invisible anchor inside the cluster for edge attachments
+            anchor = f'__anchor_{cid}'
+            dot_lines.append(
+                f'        "{anchor}" [shape=point, width=0.01, height=0.01, label="", style="invis"];'
+            )
 
-        # children: recurse for groups, draw leaves as nodes
+        # recurse/draw children
         for child in children_map.get(parent_label, []):
-            if child in children_map:  # child has its own children => subcluster
+            if child in children_map:  # child is itself a parent -> nested cluster
                 self._build_clusters_recursive(dot_lines, child, node_map, children_map)
             else:
-                node_color = node_map[child].get('color', 'white')
-                dot_lines.append(f'        "{child}" [fillcolor="{node_color}"];')
+                color = node_map[child].get('color', 'white')
+                dot_lines.append(f'        "{child}" [fillcolor="{color}"];')
 
         if parent_label is not None:
             dot_lines.append('    }')  # close subgraph
+
 
 
 
@@ -296,30 +301,53 @@ class HierarchicalGraph:
             print("Open the saved image to view the graph.")
 
     def visualize_inner_graph_with_clusters(self, filename="inner_level_graph"):
+        def _cid(label: str) -> str:
+            return label.replace(" ", "_")
+
         dot_lines = []
         dot_lines.append('digraph G {')
         dot_lines.append('    rankdir="LR";')
-        dot_lines.append('    compound=true;')  # nicer routing across clusters
+        dot_lines.append('    compound=true;')  # enable lhead/ltail for cluster edges
         dot_lines.append('    node [shape=box, style="filled"];')
 
-        # --- Build node map and children map ---
-        node_map = {}       # {label: attributes}
-        children_map = {}   # {parent_label: [child_labels]}
+        # --- Build node/children maps ---
+        node_map = {}
+        children_map = {}
         for node, attrs in self.inner_graph.nodes(data=True):
             node_map[node] = attrs
             parent = attrs.get('parent', None)
             children_map.setdefault(parent, []).append(node)
 
-        # --- Build clusters from root (None) using the class helper ---
+        # --- Build clusters from roots ---
         self._build_clusters_recursive(dot_lines, None, node_map, children_map)
 
-        # --- Add edges ---
+        # --- Add edges (route from/to clusters when endpoint is a parent) ---
         for u, v, key, data in self.inner_graph.edges(keys=True, data=True):
             label = data.get('type', '')
             penwidth = str(data.get('weight', 1.0) * 2)
             color = data.get('color', 'black')
+
+            # default endpoints are the real node names
+            tail = u
+            head = v
+            extras = []
+
+            # if u is a parent (has children), attach from its cluster anchor
+            if u in children_map:  # parent cluster exists
+                ucid = _cid(u)
+                tail = f'__anchor_{ucid}'
+                extras.append(f'ltail=cluster_{ucid}')
+
+            # if v is a parent (has children), attach to its cluster anchor
+            if v in children_map:
+                vcid = _cid(v)
+                head = f'__anchor_{vcid}'
+                extras.append(f'lhead=cluster_{vcid}')
+
+            extras_str = (', ' + ', '.join(extras)) if extras else ''
+
             dot_lines.append(
-                f'    "{u}" -> "{v}" [label="{label}", id="{key}", penwidth={penwidth}, color="{color}"];'
+                f'    "{tail}" -> "{head}" [label="{label}", id="{key}", penwidth={penwidth}, color="{color}"{extras_str}];'
             )
 
         dot_lines.append('}')
@@ -331,6 +359,7 @@ class HierarchicalGraph:
             display(Image(filename=filepath))
         except:
             print("Open the saved image to view the graph.")
+
 
 
     def visualize_subgraph(self, node_labels, filename="subgraph"):

@@ -1,4 +1,4 @@
-from .core import HierarchicalGraph,
+from .core import HierarchicalGraph
 
 # Lazy-load EPlusUtil to avoid requiring pyenergyplus before bootstrap
 __version__ = "0.1.0"

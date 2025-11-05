@@ -301,7 +301,7 @@ class HierarchicalGraph:
 
 
 
-    def visualize_outer_graph_with_parent(self, filename='outer_level_graph'):
+    def visualize_outer_graph_with_parent(self, filename='outer_level_graph_with_parent'):
         dot = graphviz.Digraph(comment='Outer Level Graph', engine='dot')
         dot.attr(rankdir='LR')
 

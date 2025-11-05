@@ -5,6 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "hierarchical-graphs"
 
+[tool.hatch.build.targets.sdist]
+include = [
+  "hierarchical_graph/**",
+  "README.md"
+]
+
 version = "0.1.0"
 description = "A utility for hierarchical graph creation and visualization."
 readme = "README.md"
@@ -25,6 +31,4 @@ dependencies = [
 [project.urls]
 Repository = "https://github.com/mugalan/hierarchical-graphs"
 
-[tool.setuptools.packages.find]
-where = ["hierarchical_graph"]
 

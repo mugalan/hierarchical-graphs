@@ -234,6 +234,32 @@ class HierarchicalGraph:
     # --------------------------
     def visualize_outer_graph(self, filename='outer_level_graph'):
         dot = graphviz.Digraph(comment='Outer Level Graph', engine='dot')
+
+        # Add nodes with group-based fill color
+        for node in self.outer_graph.nodes:
+            fillcolor = self.group_colors.get(node, 'white')
+            dot.node(str(node), style='filled', fillcolor=fillcolor)
+
+        # Add directed edges with attributes
+        for u, v, key, data in self.outer_graph.edges(keys=True, data=True):
+            label = data.get('type', '')
+            penwidth = str(data.get('weight', 1.0) * 2)
+            color = data.get('color', 'black')
+            dot.edge(str(u), str(v),
+                    label=label,
+                    penwidth=penwidth,
+                    color=color)
+
+        filepath = dot.render(filename, format='png', cleanup=True)
+        print(f"Outer-level graph saved as {filepath}")
+        try:
+            display(Image(filename=filepath))
+        except:
+            print("Open the saved image to view the graph.")
+
+
+    def visualize_outer_graph_with_parent(self, filename='outer_level_graph'):
+        dot = graphviz.Digraph(comment='Outer Level Graph', engine='dot')
         dot.attr(rankdir='LR')
 
         # Add nodes with fill colors

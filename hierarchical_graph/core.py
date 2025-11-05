@@ -35,8 +35,6 @@ class EdgeModel(BaseModel):
             return None
         return v
 
-
-
 class HierarchicalGraph:
     def __init__(
         self,
@@ -69,8 +67,6 @@ class HierarchicalGraph:
         """
         self.nodes_data = self._validate_nodes(nodes_data)
         self.edges_data = self._validate_edges(edges_data)
-        self.nodes_data = nodes_data
-        self.edges_data = edges_data
         self._normalize_nodes()
 
         if not default_colors:
@@ -81,11 +77,8 @@ class HierarchicalGraph:
         else:
             self.default_colors = default_colors
 
-        # colors must exist BEFORE assigning to groups
-        self._assign_group_colors()
-
         self.inner_graph = nx.MultiDiGraph()
-        self.outer_graph = nx.DiGraph()
+        self.outer_graph = nx.MultiDiGraph()
 
         self.create_hierarchical_graphs_iterative()
 
@@ -98,7 +91,6 @@ class HierarchicalGraph:
                 raise ValueError(f"Invalid node data:\n{e}")
         return validated
 
-
     def _validate_edges(self, edge_list):
         validated = []
         for item in edge_list:
@@ -109,16 +101,6 @@ class HierarchicalGraph:
             except ValidationError as e:
                 raise ValueError(f"Invalid edge data:\n{e}")
         return validated
-
-
-    def _assign_group_colors(self):
-        """Assign consistent colors to groups."""
-        groups = sorted(set(node.get('group', 'Default') for node in self.nodes_data))
-
-        self.group_colors = {
-            group: self.default_colors[i % len(self.default_colors)]
-            for i, group in enumerate(groups)
-        }
 
     def _normalize_nodes(self):
         # enforce group presence always
@@ -190,94 +172,6 @@ class HierarchicalGraph:
 
 
     # --------------------------
-    # Node Operations
-    # --------------------------
-    def add_nodes(self, node_data):
-        """
-        Add one or more nodes.
-        Automatically updates group color mapping if new groups are introduced.
-        """
-        if isinstance(node_data, dict):
-            node_data = [node_data]
-
-        self.nodes_data.extend(node_data)
-        self._assign_group_colors()  # Update colors in case new groups are added
-        self.create_hierarchical_graphs_iterative()
-
-    def edit_nodes(self, label_or_labels, new_data):
-        """
-        Edit one or more nodes by label.
-        Parameters:
-            label_or_labels: str or list of str
-            new_data: dict of attributes to update
-        """
-        if isinstance(label_or_labels, str):
-            label_or_labels = [label_or_labels]
-
-        for node in self.nodes_data:
-            if node['label'] in label_or_labels:
-                node.update(new_data)
-
-        self._assign_group_colors()  # in case group was changed during edit
-        self.create_hierarchical_graphs_iterative()
-
-    def delete_nodes(self, label_or_labels):
-        """
-        Delete one or more nodes and remove any edges involving them.
-        Parameters:
-            label_or_labels: str or list of str
-        """
-        if isinstance(label_or_labels, str):
-            label_or_labels = [label_or_labels]
-
-        self.nodes_data = [node for node in self.nodes_data if node['label'] not in label_or_labels]
-        self.edges_data = [edge for edge in self.edges_data if edge['start'] not in label_or_labels and edge['end'] not in label_or_labels]
-        self._assign_group_colors()  # groups may have been removed
-        self.create_hierarchical_graphs_iterative()
-
-    # --------------------------
-    # Edge Operations
-    # --------------------------
-    def add_edges(self, edge_data):
-        """Add one or more edges."""
-        if isinstance(edge_data, list):
-            self.edges_data.extend(edge_data)
-        else:
-            self.edges_data.append(edge_data)
-        self.create_hierarchical_graphs_iterative()
-
-    def edit_edges(self, start_end_pairs, new_data):
-        """
-        Edit one or more edges.
-        `start_end_pairs`: tuple or list of tuples like [(start, end), ...]
-        `new_data`: dict with new edge attributes
-        """
-        if isinstance(start_end_pairs, tuple):
-            start_end_pairs = [start_end_pairs]
-
-        for start, end in start_end_pairs:
-            for edge in self.edges_data:
-                if edge['start'] == start and edge['end'] == end:
-                    edge.update(new_data)
-                    break
-        self.create_hierarchical_graphs_iterative()
-
-    def delete_edges(self, start_end_pairs):
-        """
-        Delete one or more edges.
-        `start_end_pairs`: tuple or list of tuples like [(start, end), ...]
-        """
-        if isinstance(start_end_pairs, tuple):
-            start_end_pairs = [start_end_pairs]
-
-        self.edges_data = [
-            edge for edge in self.edges_data
-            if (edge['start'], edge['end']) not in start_end_pairs
-        ]
-        self.create_hierarchical_graphs_iterative()
-
-
-    # --------------------------
     # Merge Graphs
     # --------------------------
 
@@ -305,7 +199,7 @@ class HierarchicalGraph:
                 self.nodes_data.append(other_node)
 
         # --- Merge Edges ---
-        existing_edges = {(edge['start'], edge['end']) for edge in self.edges_data}
+        existing_edges = {(e['start'], e['end'], e.get('type')) for e in self.edges_data}
 
         for other_edge in other.edges_data:
             edge_key = (other_edge['start'], other_edge['end'])
@@ -322,8 +216,6 @@ class HierarchicalGraph:
         # --- Normalize and rebuild ---
         self._normalize_nodes()
         self.create_hierarchical_graphs_iterative()
-
-
 
     # --------------------------
     # Visualization Methods
@@ -476,6 +368,93 @@ class HierarchicalGraph:
         except:
             print("Open the saved image to view the subgraph.")
 
+    # --------------------------
+    # Node Operations
+    # --------------------------
+    def add_nodes(self, node_data):
+        """
+        Add one or more nodes.
+        Automatically updates group color mapping if new groups are introduced.
+        """
+        if isinstance(node_data, dict):
+            node_data = [node_data]
+
+        self.nodes_data.extend(node_data)
+        self.create_hierarchical_graphs_iterative()
+
+    def edit_nodes(self, label_or_labels, new_data):
+        """
+        Edit one or more nodes by label.
+        Parameters:
+            label_or_labels: str or list of str
+            new_data: dict of attributes to update
+        """
+        if isinstance(label_or_labels, str):
+            label_or_labels = [label_or_labels]
+
+        for node in self.nodes_data:
+            if node['label'] in label_or_labels:
+                node.update(new_data)
+
+        self.create_hierarchical_graphs_iterative()
+
+    def delete_nodes(self, label_or_labels):
+        """
+        Delete one or more nodes and remove any edges involving them.
+        Parameters:
+            label_or_labels: str or list of str
+        """
+        if isinstance(label_or_labels, str):
+            label_or_labels = [label_or_labels]
+
+        self.nodes_data = [node for node in self.nodes_data if node['label'] not in label_or_labels]
+        self.edges_data = [edge for edge in self.edges_data if edge['start'] not in label_or_labels and edge['end'] not in label_or_labels]
+        self.create_hierarchical_graphs_iterative()
+
+    # --------------------------
+    # Edge Operations
+    # --------------------------
+    def add_edges(self, edge_data):
+        """Add one or more edges."""
+        if isinstance(edge_data, list):
+            self.edges_data.extend(edge_data)
+        else:
+            self.edges_data.append(edge_data)
+        self.create_hierarchical_graphs_iterative()
+
+    def edit_edges(self, start_end_pairs, new_data):
+        """
+        Edit one or more edges.
+        `start_end_pairs`: tuple or list of tuples like [(start, end), ...]
+        `new_data`: dict with new edge attributes
+        """
+        if isinstance(start_end_pairs, tuple):
+            start_end_pairs = [start_end_pairs]
+
+        for start, end in start_end_pairs:
+            for edge in self.edges_data:
+                if edge['start'] == start and edge['end'] == end:
+                    edge.update(new_data)
+                    break
+        self.create_hierarchical_graphs_iterative()
+
+    def delete_edges(self, start_end_pairs):
+        """
+        Delete one or more edges.
+        `start_end_pairs`: tuple or list of tuples like [(start, end), ...]
+        """
+        if isinstance(start_end_pairs, tuple):
+            start_end_pairs = [start_end_pairs]
+
+        self.edges_data = [
+            edge for edge in self.edges_data
+            if (edge['start'], edge['end']) not in start_end_pairs
+        ]
+        self.create_hierarchical_graphs_iterative()
+
+
+ 
+
     #----Get Node, edge attributes
 
     def get_node_attributes(self, labels=None):
@@ -576,7 +555,6 @@ class HierarchicalGraph:
         raw_nodes = df.to_dict(orient='records')
         self.nodes_data = self._validate_nodes(raw_nodes)
         self._normalize_nodes()
-        self._assign_group_colors()
         self.create_hierarchical_graphs_iterative()
         print(f"Nodes loaded from {filename}")
 

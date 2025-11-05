@@ -286,7 +286,7 @@ class HierarchicalGraph:
         Merge another HierarchicalGraph into this one.
         - Updates existing nodes and edges with attributes from the other.
         - Adds new nodes and edges if they don't already exist.
-        - Merges group colors.
+        - Rebuilds hierarchical structure.
         """
 
         # --- Merge Nodes ---
@@ -319,12 +319,10 @@ class HierarchicalGraph:
                 # add new edge
                 self.edges_data.append(other_edge)
 
-        # --- Update group colors ---
+        # --- Normalize and rebuild ---
         self._normalize_nodes()
-        self._assign_group_colors()
-
-        # --- Rebuild graphs ---
         self.create_hierarchical_graphs_iterative()
+
 
 
     # --------------------------
@@ -422,7 +420,6 @@ class HierarchicalGraph:
         except:
             print("Open the saved image to view the graph.")
 
-
     def visualize_subgraph(self, node_labels, filename="subgraph"):
         """
         Visualize a subgraph induced by a list of node labels.
@@ -478,7 +475,6 @@ class HierarchicalGraph:
             display(Image(filename=filepath))
         except:
             print("Open the saved image to view the subgraph.")
-
 
     #----Get Node, edge attributes
 

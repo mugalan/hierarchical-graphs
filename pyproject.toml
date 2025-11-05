@@ -4,6 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hierarchical-graph"
+
 version = "0.1.0"
 description = "A utility for hierarchical graph creation and visualization."
 readme = "README.md"

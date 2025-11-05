@@ -7,33 +7,48 @@ from IPython.display import display, Image
 from pydantic import BaseModel, ValidationError, field_validator
 from typing import Optional
 
+from typing import Optional
+from pydantic import BaseModel, ValidationError, field_validator
+from pydantic.config import ConfigDict  # v2 config
+
+# ---------- Models ----------
 
 class NodeModel(BaseModel):
     label: str
-    parent: Optional[str] = None  
+    parent: Optional[str] = None
     type: Optional[str] = None
     color: Optional[str] = None
     description: Optional[str] = None
 
-    class Config:
-        extra = 'allow'
+    # accept/keep arbitrary extra attributes
+    model_config = ConfigDict(extra='allow')
+
+    # normalize NaNs from e.g. pandas -> None (before type coercion)
+    @field_validator('*', mode='before')
+    @classmethod
+    def fix_nan(cls, v):
+        if v != v:  # NaN check
+            return None
+        return v
+
 
 class EdgeModel(BaseModel):
     start: str
     end: str
-    type: str
+    type: str  # now REQUIRED
     weight: Optional[float] = None
     color: Optional[str] = None
     description: Optional[str] = None
 
-    # this validator executes BEFORE type coercion
-    @field_validator('*', mode="before")
+    model_config = ConfigDict(extra='allow')
+
+    @field_validator('*', mode='before')
+    @classmethod
     def fix_nan(cls, v):
-        # convert nan → None
-        # pandas blank cell = nan => string validators freak out
-        if v != v:   # nan check canonical
+        if v != v:  # NaN check
             return None
         return v
+
 
 class HierarchicalGraph:
     def __init__(
@@ -82,25 +97,32 @@ class HierarchicalGraph:
 
         self.create_hierarchical_graphs_iterative()
 
+    # ---------- Validators ----------
+
     def _validate_nodes(self, node_list):
         validated = []
         for item in node_list:
             try:
-                validated.append(NodeModel(**item).model_dump())
+                # v2-style validation; drop explicit None fields to keep payload clean
+                model = NodeModel.model_validate(item)
+                cleaned = model.model_dump(exclude_none=True)
+                validated.append(cleaned)
             except ValidationError as e:
-                raise ValueError(f"Invalid node data:\n{e}")
+                raise ValueError(f"Invalid node data:\n{e}") from e
         return validated
+
 
     def _validate_edges(self, edge_list):
         validated = []
         for item in edge_list:
             try:
                 model = EdgeModel.model_validate(item)
-                cleaned = model.model_dump(exclude_none=True)  # 💡 omit None values
+                cleaned = model.model_dump(exclude_none=True)  # omit None values
                 validated.append(cleaned)
             except ValidationError as e:
-                raise ValueError(f"Invalid edge data:\n{e}")
+                raise ValueError(f"Invalid edge data:\n{e}") from e
         return validated
+
 
     def _normalize_nodes(self):
         # enforce group presence always

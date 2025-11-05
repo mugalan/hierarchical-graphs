@@ -10,11 +10,11 @@ from typing import Optional
 
 class NodeModel(BaseModel):
     label: str
-    group: Optional[str] = 'Default'
+    parent: Optional[str] = None  
     type: Optional[str] = None
     color: Optional[str] = None
     description: Optional[str] = None
-    # allow additional attributes
+
     class Config:
         extra = 'allow'
 
@@ -126,6 +126,24 @@ class HierarchicalGraph:
             if 'group' not in node:
                 node['group'] = 'Default'
 
+    def _build_clusters_recursive(self, dot_lines, parent_label, node_map, children_map):
+        if parent_label is not None:
+            cluster_id = parent_label.replace(" ", "_")
+            dot_lines.append(f'    subgraph cluster_{cluster_id} {{')
+            dot_lines.append(f'        label="{parent_label}";')
+            bg_color = node_map.get(parent_label, {}).get('color', 'white')
+            dot_lines.append(f'        bgcolor="{bg_color}";')
+
+        # Add children nodes or recurse into subclusters
+        for child in children_map.get(parent_label, []):
+            if child in children_map:
+                self._build_clusters_recursive(dot_lines, child, node_map, children_map)
+            else:
+                node_color = node_map[child].get('color', 'white')
+                dot_lines.append(f'        "{child}" [fillcolor="{node_color}"];')
+
+        if parent_label is not None:
+            dot_lines.append('    }')  # close subgraph
 
 
     def create_hierarchical_graphs_iterative(self):
@@ -136,9 +154,9 @@ class HierarchicalGraph:
             label = node_data['label']
             attributes = {k: v for k, v in node_data.items() if k != 'label'}
 
-            # Ensure 'group' is always present
-            if 'group' not in attributes:
-                attributes['group'] = 'Default'
+            # Ensure 'parent' is always present
+            if 'parent' not in attributes:
+                attributes['parent'] = None
 
             inner_graph.add_node(label, **attributes)
 
@@ -149,28 +167,27 @@ class HierarchicalGraph:
             attributes = {k: v for k, v in edge_data.items() if k not in ['start', 'end']}
             inner_graph.add_edge(start, end, **attributes)
 
-        # --- Create outer MultiDiGraph ---
+        # --- Create outer MultiDiGraph reflecting recursive parent-child hierarchy ---
         outer_graph = nx.MultiDiGraph()
 
-        # --- Collect group names from the updated inner graph ---
-        group_nodes = set()
-        for _, attrs in inner_graph.nodes(data=True):
-            group_nodes.add(attrs.get('group', 'Default'))
+        # Add all nodes from inner graph
+        outer_graph.add_nodes_from(inner_graph.nodes)
 
+        # Add parent-child edges from 'parent' attribute (hierarchical structure)
+        for node, attrs in inner_graph.nodes(data=True):
+            parent = attrs.get('parent')
+            if parent:
+                outer_graph.add_edge(parent, node, relation='hierarchy')
 
-        outer_graph.add_nodes_from(group_nodes)
-
-        # --- Add inter-group edges to outer graph (one-to-one mapping from inner) ---
+        # Optionally also reflect cross-node functional edges (non-structural)
         for u, v, data in inner_graph.edges(data=True):
-            group_u = inner_graph.nodes[u].get('group', 'Default')
-            group_v = inner_graph.nodes[v].get('group', 'Default')
-
-            if group_u != group_v:
-                outer_graph.add_edge(group_u, group_v, **data)
+            if not outer_graph.has_edge(u, v):
+                outer_graph.add_edge(u, v, **data)
 
         # Assign back
         self.inner_graph = inner_graph
         self.outer_graph = outer_graph
+
 
     # --------------------------
     # Node Operations
@@ -315,21 +332,33 @@ class HierarchicalGraph:
     # --------------------------
     def visualize_outer_graph(self, filename='outer_level_graph'):
         dot = graphviz.Digraph(comment='Outer Level Graph', engine='dot')
+        dot.attr(rankdir='LR')
 
-        # Add nodes with group-based fill color
-        for node in self.outer_graph.nodes:
-            fillcolor = self.group_colors.get(node, 'white')
+        # Add nodes with fill colors
+        for node, attrs in self.outer_graph.nodes(data=True):
+            fillcolor = attrs.get('color', 'white')
             dot.node(str(node), style='filled', fillcolor=fillcolor)
 
-        # Add directed edges with attributes
+        # Add edges with distinction between hierarchy and functional links
         for u, v, key, data in self.outer_graph.edges(keys=True, data=True):
-            label = data.get('type', '')
-            penwidth = str(data.get('weight', 1.0) * 2)
-            color = data.get('color', 'black')
-            dot.edge(str(u), str(v),
-                    label=label,
-                    penwidth=penwidth,
-                    color=color)
+            relation = data.get('relation', None)
+
+            if relation == 'hierarchy':
+                # Parent-child edge (hierarchy)
+                dot.edge(str(u), str(v),
+                        label='parent',
+                        style='dashed',
+                        color='gray',
+                        penwidth='1.5')
+            else:
+                # Functional/cross edge
+                label = data.get('type', '')
+                penwidth = str(data.get('weight', 1.0) * 2)
+                color = data.get('color', 'black')
+                dot.edge(str(u), str(v),
+                        label=label,
+                        color=color,
+                        penwidth=penwidth)
 
         filepath = dot.render(filename, format='png', cleanup=True)
         print(f"Outer-level graph saved as {filepath}")
@@ -339,42 +368,52 @@ class HierarchicalGraph:
             print("Open the saved image to view the graph.")
 
     def visualize_inner_graph_with_clusters(self, filename="inner_level_graph"):
-        dot_source = 'digraph G {\n'
-        dot_source += '    rankdir="LR";\n'
-        dot_source += '    node [shape=box, style="filled"];\n'
+        dot_lines = []
+        dot_lines.append('digraph G {')
+        dot_lines.append('    rankdir="LR";')
+        dot_lines.append('    node [shape=box, style="filled"];')
 
-        # Group nodes by their cluster (group)
-        clusters = {}
-        node_attrs = {}
+        # --- Build node map and children map ---
+        node_map = {}       # {label: attributes}
+        children_map = {}   # {parent_label: [child_labels]}
+        
         for node, attrs in self.inner_graph.nodes(data=True):
-            group = attrs.get('group', 'DefaultGroup')
-            clusters.setdefault(group, []).append(node)
-            node_attrs[node] = attrs
+            node_map[node] = attrs
+            parent = attrs.get('parent', None)
+            children_map.setdefault(parent, []).append(node)
 
-        for group, nodes in clusters.items():
-            bg_color = self.group_colors.get(group, 'white')
-            cluster_id = group.replace(" ", "_")
+        # --- Recursive cluster builder ---
+        def _build_clusters_recursive(dot_lines, parent_label):
+            if parent_label is not None:
+                cluster_id = parent_label.replace(" ", "_")
+                dot_lines.append(f'    subgraph cluster_{cluster_id} {{')
+                dot_lines.append(f'        label="{parent_label}";')
+                bg_color = node_map.get(parent_label, {}).get('color', 'white')
+                dot_lines.append(f'        bgcolor="{bg_color}";')
 
-            dot_source += f'    subgraph cluster_{cluster_id} {{\n'
-            dot_source += f'        label="{group}";\n'
-            dot_source += f'        bgcolor="{bg_color}";\n'
+            for child in children_map.get(parent_label, []):
+                if child in children_map:
+                    _build_clusters_recursive(dot_lines, child)
+                else:
+                    color = node_map[child].get('color', 'white')
+                    dot_lines.append(f'        "{child}" [fillcolor="{color}"];')
 
-            for node in nodes:
-                # Fallback to group color if no individual color provided
-                node_color = node_attrs[node].get('color', self.group_colors.get(group, 'white'))
-                dot_source += f'        "{node}" [fillcolor="{node_color}"];\n'
+            if parent_label is not None:
+                dot_lines.append('    }')
 
-            dot_source += '    }\n'
+        # --- Begin cluster construction from root (None or missing parent) ---
+        _build_clusters_recursive(dot_lines, None)
 
-        # Add edges
+        # --- Add edges ---
         for u, v, key, data in self.inner_graph.edges(keys=True, data=True):
             label = data.get('type', '')
             penwidth = str(data.get('weight', 1.0) * 2)
             color = data.get('color', 'black')
-            dot_source += f'    "{u}" -> "{v}" [label="{label}", id="{key}", penwidth={penwidth}, color="{color}"];\n'
+            dot_lines.append(f'    "{u}" -> "{v}" [label="{label}", id="{key}", penwidth={penwidth}, color="{color}"];')
 
-        dot_source += '}\n'
-
+        dot_lines.append('}')
+        
+        dot_source = '\n'.join(dot_lines)
         dot = graphviz.Source(dot_source, format='png')
         filepath = dot.render(filename, cleanup=True)
         print(f"Inner-level graph saved as {filepath}")
@@ -382,6 +421,7 @@ class HierarchicalGraph:
             display(Image(filename=filepath))
         except:
             print("Open the saved image to view the graph.")
+
 
     def visualize_subgraph(self, node_labels, filename="subgraph"):
         """
@@ -404,26 +444,33 @@ class HierarchicalGraph:
         # Create subgraph
         subgraph = self.inner_graph.subgraph(valid_nodes).copy()
 
-        dot_source = 'digraph G {\n'
-        dot_source += '    rankdir="LR";\n'
-        dot_source += '    node [shape=box, style="filled"];\n'
+        dot_lines = []
+        dot_lines.append('digraph G {')
+        dot_lines.append('    rankdir="LR";')
+        dot_lines.append('    node [shape=box, style="filled"];')
 
-        # Add nodes with colors
+        # Add nodes with fallback coloring (own color → parent's color → default)
         for node in subgraph.nodes:
             attrs = subgraph.nodes[node]
-            group = attrs.get('group', 'DefaultGroup')
-            fillcolor = attrs.get('color', self.group_colors.get(group, 'white'))
-            dot_source += f'    "{node}" [fillcolor="{fillcolor}"];\n'
+            color = attrs.get('color')
+
+            # Try to inherit parent color if own color not defined
+            if not color:
+                parent = attrs.get('parent')
+                color = self.inner_graph.nodes[parent].get('color') if parent in self.inner_graph else 'white'
+
+            dot_lines.append(f'    "{node}" [fillcolor="{color}"];')
 
         # Add edges with styling
         for u, v, key, data in subgraph.edges(keys=True, data=True):
             label = data.get('type', '')
             penwidth = str(data.get('weight', 1.0) * 2)
             color = data.get('color', 'black')
-            dot_source += f'    "{u}" -> "{v}" [label="{label}", id="{key}", penwidth={penwidth}, color="{color}"];\n'
+            dot_lines.append(f'    "{u}" -> "{v}" [label="{label}", id="{key}", penwidth={penwidth}, color="{color}"];')
 
-        dot_source += '}\n'
+        dot_lines.append('}')
 
+        dot_source = '\n'.join(dot_lines)
         dot = graphviz.Source(dot_source, format='png')
         filepath = dot.render(filename, cleanup=True)
         print(f"Subgraph saved as {filepath}")
@@ -431,6 +478,7 @@ class HierarchicalGraph:
             display(Image(filename=filepath))
         except:
             print("Open the saved image to view the subgraph.")
+
 
     #----Get Node, edge attributes
 
